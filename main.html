@@ -1,0 +1,1760 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drag Platformer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        canvas {
+            background-color: #222;
+            display: block;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            border-radius: 0.5rem;
+            cursor: default;
+        }
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            font-family: 'Inter', sans-serif;
+            touch-action: none;
+            overflow: hidden;
+        }
+        /* Make sure modals are on top of the canvas */
+        .modal-overlay {
+            z-index: 50;
+        }
+    </style>
+</head>
+<body class="h-full flex items-center justify-center p-4">
+    <div class="w-full max-w-6xl relative">
+        <canvas id="gameCanvas"></canvas>
+        
+        <!-- Real HTML Modal for Text/Number Input -->
+        <div id="inputModal" class="modal-overlay hidden absolute inset-0 bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-700 p-6 rounded-lg shadow-xl w-full max-w-md">
+                <h3 id="modalTitle" class="text-xl font-bold text-white mb-4">Enter Value</h3>
+                <input type="text" id="modalInput" class="w-full p-2 rounded bg-gray-900 text-white border border-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <div class="flex justify-end gap-4 mt-6">
+                    <button id="modalCancel" class="px-4 py-2 rounded bg-gray-500 text-white font-semibold hover:bg-gray-400">Cancel</button>
+                    <button id="modalConfirm" class="px-4 py-2 rounded bg-blue-600 text-white font-semibold hover:bg-blue-500">OK</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Real HTML Modal for Sharing -->
+        <div id="shareModal" class="modal-overlay hidden absolute inset-0 bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-700 p-6 rounded-lg shadow-xl w-full max-w-2xl">
+                 <h3 id="shareModalTitle" class="text-xl font-bold text-white mb-4">Share Code</h3>
+                 <textarea id="shareCodeText" class="w-full h-48 p-2 rounded bg-gray-900 text-gray-300 font-mono border border-gray-500 resize-none" readonly></textarea>
+                 <div class="flex justify-end gap-4 mt-6">
+                    <button id="shareModalClose" class="px-4 py-2 rounded bg-gray-500 text-white font-semibold hover:bg-gray-400">Close</button>
+                    <button id="shareModalCopy" class="px-4 py-2 rounded bg-blue-600 text-white font-semibold hover:bg-blue-500">Copy Code</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // --- CONSTANTS ---
+        const DEFAULT_PHYSICS = {
+            gravity: 1.00,
+            friction: 1.10,
+            groundFriction: 0.9,
+            iceFriction: 0.995,
+            launchPower: 0.3,
+            maxLaunch: 30
+        };
+        
+        const DEFAULT_LEVEL_SETTINGS = {
+            maxTries: 10,
+            starTries: { one: 8, two: 5, three: 3 },
+            physics: { ...DEFAULT_PHYSICS }
+        };
+
+        const STATE = {
+            MAIN_MENU: 0,
+            PLAYING: 1,
+            GAME_OVER: 2,
+            LEVEL_EDITOR: 3,
+            LEVEL_WON: 4,
+            TESTING_LEVEL: 5,
+            LEVEL_SELECT: 6,
+            PROMPT_INPUT: 7,
+            SHOW_MESSAGE: 8,
+            PROMPT_IMPORT: 9,
+            SHOW_SHARE_CODE: 10,
+        };
+        
+        const SCROLLBAR_SIZE = 20;
+
+        // --- CAMERA CLASS ---
+        class Camera {
+            constructor(width, height) {
+                this.pos = { x: 0, y: 0 };
+                this.width = width;
+                this.height = height;
+                this.levelWidth = width;
+                this.levelHeight = height;
+            }
+            clampPosition() {
+                this.pos.x = Math.max(0, Math.min(this.pos.x, this.levelWidth - this.width));
+                this.pos.y = Math.max(0, Math.min(this.pos.y, this.levelHeight - this.height));
+            }
+            update(playerPos) {
+                this.pos.x = playerPos.x - this.width / 2;
+                this.pos.y = playerPos.y - this.height / 2;
+                this.clampPosition();
+            }
+            apply(ctx) {
+                ctx.save();
+                ctx.translate(-Math.floor(this.pos.x), -Math.floor(this.pos.y));
+            }
+            restore(ctx) {
+                ctx.restore();
+            }
+            toWorldCoords(screenX, screenY) {
+                return {
+                    x: screenX + this.pos.x,
+                    y: screenY + this.pos.y
+                };
+            }
+        }
+
+        // --- ENTITY & PLAYER CLASSES ---
+        class Entity {}
+        
+        Entity.renderData = (ctx, data) => {
+            ctx.save();
+            ctx.translate(data.x + data.w / 2, data.y + data.h / 2);
+            ctx.rotate((data.rotation || 0) * Math.PI / 180);
+            
+            const x = -data.w / 2;
+            const y = -data.h / 2;
+            const w = data.w;
+            const h = data.h;
+
+            if (data.t === 'spike') {
+                ctx.fillStyle = data.c;
+                ctx.beginPath();
+                ctx.moveTo(x, y + h);
+                ctx.lineTo(x + w / 2, y);
+                ctx.lineTo(x + w, y + h);
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.fillStyle = data.c;
+                ctx.fillRect(x, y, w, h);
+
+                if (data.t === 'lava') {
+                    ctx.fillStyle = 'rgba(255, 255, 0, 0.5)';
+                    ctx.fillRect(x, y, w, h / 3);
+                } else if (data.t === 'finish') {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+                    for (let i = 0; i < 4; i++) { for (let j = 0; j < 4; j++) { if ((i + j) % 2 === 0) { ctx.fillRect( x + i * (w / 4), y + j * (h / 4), w / 4, h / 4 ); } } }
+                } else if (data.t === 'ice') {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                    ctx.fillRect(x, y + h * 0.1, w, h * 0.8);
+                }
+            }
+            
+            ctx.restore();
+        };
+
+        class Player {
+             constructor(x, y, size) {
+                this.spawnPos = { x: x, y: y };
+                this.pos = { x: x, y: y };
+                this.vel = { x: 0, y: 0 };
+                this.size = { w: size, h: size };
+                this.color = '#00FFFF';
+                this.isGrounded = false;
+                this.isOnIce = false;
+            }
+            applyForce(forceX, forceY) {
+                this.vel.x += forceX;
+                this.vel.y += forceY;
+                this.isGrounded = false;
+                this.isOnIce = false;
+            }
+            update(entities, physics, levelHeight) {
+                if (!this.isGrounded) this.vel.y += physics.gravity;
+                let currentFriction = this.isGrounded ? (this.isOnIce ? physics.iceFriction : physics.groundFriction) : physics.friction;
+                this.vel.x *= currentFriction;
+                if (Math.abs(this.vel.x) < 0.1) this.vel.x = 0;
+                if (Math.abs(this.vel.y) < 0.1 && this.isGrounded) this.vel.y = 0;
+                this.pos.x += this.vel.x;
+                let specialCollision = this.handleCollisionsX(entities);
+                this.pos.y += this.vel.y;
+                this.isGrounded = false;
+                this.isOnIce = false;
+                let specialCollisionY = this.handleCollisionsY(entities);
+                
+                if (this.pos.y > levelHeight + 200) {
+                    return 'hazard';
+                }
+                
+                return specialCollision || specialCollisionY;
+            }
+            handleCollisionsX(entities) {
+                let specialType = null;
+                entities.forEach(entityData => {
+                    const entity = { pos: {x: entityData.x, y: entityData.y}, size: {w: entityData.w, h: entityData.h}, type: entityData.t };
+                    if ( this.pos.x < entity.pos.x + entity.size.w && this.pos.x + this.size.w > entity.pos.x &&
+                         this.pos.y < entity.pos.y + entity.size.h && this.pos.y + this.size.h > entity.pos.y ) {
+                        if (entity.type === 'spike' || entity.type === 'lava') specialType = 'hazard';
+                        if (entity.type === 'finish') specialType = 'finish';
+                        if (entity.type === 'platform' || entity.type === 'ice') {
+                            if (this.vel.x > 0) { this.pos.x = entity.pos.x - this.size.w; this.vel.x = 0; } 
+                            else if (this.vel.x < 0) { this.pos.x = entity.pos.x + entity.size.w; this.vel.x = 0; }
+                        }
+                    }
+                });
+                return specialType;
+            }
+            handleCollisionsY(entities) {
+                let specialType = null;
+                entities.forEach(entityData => {
+                    const entity = { pos: {x: entityData.x, y: entityData.y}, size: {w: entityData.w, h: entityData.h}, type: entityData.t };
+                    if ( this.pos.x < entity.pos.x + entity.size.w && this.pos.x + this.size.w > entity.pos.x &&
+                         this.pos.y < entity.pos.y + entity.size.h && this.pos.y + this.size.h > entity.pos.y ) {
+                        if (entity.type === 'spike' || entity.type === 'lava') specialType = 'hazard';
+                        if (entity.type === 'finish') specialType = 'finish';
+                        if (entity.type === 'platform' || entity.type === 'ice') {
+                            if (this.vel.y > 0) { 
+                                this.pos.y = entity.pos.y - this.size.h; this.vel.y = 0; this.isGrounded = true;
+                                if (entity.type === 'ice') this.isOnIce = true;
+                            } else if (this.vel.y < 0) { this.pos.y = entity.pos.y + entity.size.h; this.vel.y = 0; }
+                        }
+                    }
+                });
+                return specialType;
+            }
+            render(ctx) { ctx.fillStyle = this.color; ctx.fillRect(this.pos.x, this.pos.y, this.size.w, this.size.h); }
+            getCenter() { return { x: this.pos.x + this.size.w / 2, y: this.pos.y + this.size.h / 2 } }
+            isStopped(physics) { 
+                const grav = physics.gravity !== undefined ? physics.gravity : DEFAULT_PHYSICS.gravity;
+                return Math.abs(this.vel.x) < 0.5 && Math.abs(this.vel.y) < 0.5 && (this.isGrounded || (Math.abs(this.vel.y) < grav * 2)); 
+            }
+            reset(x, y) { this.pos.x = x; this.pos.y = y; this.vel.x = 0; this.vel.y = 0; this.isGrounded = false; this.isOnIce = false; }
+        }
+
+        // --- GAME CLASS ---
+        class Game {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.ctx = this.canvas.getContext('2d');
+                this.canvas.width = 1280;
+                this.canvas.height = 720;
+                
+                this.inputModal = document.getElementById('inputModal');
+                this.modalTitle = document.getElementById('modalTitle');
+                this.modalInput = document.getElementById('modalInput');
+                this.modalCancel = document.getElementById('modalCancel');
+                this.modalConfirm = document.getElementById('modalConfirm');
+                this.shareModal = document.getElementById('shareModal');
+                this.shareModalTitle = document.getElementById('shareModalTitle');
+                this.shareCodeText = document.getElementById('shareCodeText');
+                this.shareModalClose = document.getElementById('shareModalClose');
+                this.shareModalCopy = document.getElementById('shareModalCopy');
+                
+                this.editor = {
+                    sidebarWidth: 200,
+                    entities: [],
+                    playerSpawn: { x: 100, y: 600 },
+                    selectedTool: 'select',
+                    levelSettings: JSON.parse(JSON.stringify(DEFAULT_LEVEL_SETTINGS)),
+                    selectedEntityIndex: null,
+                    isResizing: null,
+                    dragOffset: { x: 0, y: 0 },
+                    resizeHandleSize: 10,
+                    levelWidth: this.canvas.width,
+                    levelHeight: this.canvas.height,
+                    isPanningX: false,
+                    isPanningY: false,
+                    panDragOffset: 0,
+                    sidebarScrollY: 0,
+                    sidebarContentHeight: 1200,
+                };
+                
+                this.gameCamera = new Camera(this.canvas.width, this.canvas.height);
+                this.editorCamera = new Camera(
+                    this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE, 
+                    this.canvas.height - SCROLLBAR_SIZE
+                );
+                
+                this.levelWidth = this.canvas.width;
+                this.levelHeight = this.canvas.height;
+                this.entities = [];
+                this.player = new Player(0, 0, 30);
+                
+                this.levelName = "";
+                this.maxTries = 10;
+                this.starTries = { one: 8, two: 5, three: 3 };
+                this.physics = { ...DEFAULT_PHYSICS };
+                
+                this.state = STATE.MAIN_MENU;
+                this.previousState = STATE.MAIN_MENU;
+                
+                this.attemptsRemaining = 10;
+                this.attemptsUsed = 0;
+                
+                this.isDragging = false;
+                this.dragStart = { x: 0, y: 0 };
+                this.dragEnd = { x: 0, y: 0 };
+                this.mouse = { x: 0, y: 0, isDown: false, clicked: false };
+                
+                this.isListeningForText = false;
+                this.promptCallback = null;
+                
+                this.messageText = "";
+                this.messageTimer = 0;
+                this.nextState = STATE.LEVEL_EDITOR;
+
+                this.shareCode = "";
+                this.shareLevelName = "";
+                
+                this.toolPalette = [
+                    { id: 'select', text: 'Select', color: '#FFF' },
+                    { id: 'duplicate', text: 'Duplicate', color: '#FFF' },
+                    { id: 'rotate', text: 'Rotate (R)', color: '#FFF' },
+                    { id: 'platform', text: 'Platform', color: '#888' },
+                    { id: 'ice', text: 'Ice Block', color: '#AADDFF' },
+                    { id: 'spike', text: 'Spike', color: '#FF4444' },
+                    { id: 'lava', text: 'Lava', color: '#FF8800' },
+                    { id: 'finish', text: 'Finish', color: '#00FF00' },
+                    { id: 'player_spawn', text: 'Player Spawn', color: '#00FFFF' },
+                    { id: 'erase', text: 'Erase', color: '#FFF' },
+                ];
+
+                this.savedLevels = [];
+                this.starProgress = {};
+                this.buttons = [];
+                this.init();
+            }
+
+            init() {
+                this.loadLevelsFromStorage();
+                this.loadStarProgress();
+                this.setupInputListeners();
+                this.resetEditor();
+                this.gameLoop();
+            }
+            
+            resetEditor() {
+                this.editor.levelWidth = this.editorCamera.width;
+                this.editor.levelHeight = this.editorCamera.height;
+                this.editor.entities = [ { x: 0, y: this.editor.levelHeight - 40, w: this.editor.levelWidth, h: 40, c: '#888', t: 'platform', rotation: 0 } ];
+                this.editor.playerSpawn = { x: 100, y: this.editor.levelHeight - 100 };
+                this.editor.levelSettings = JSON.parse(JSON.stringify(DEFAULT_LEVEL_SETTINGS));
+                this.updateEditorCameraSize();
+                this.editorCamera.pos = { x: 0, y: 0 };
+            }
+            
+            // MODIFIED: loadLevel (Deep Copy)
+            loadLevel(levelData) {
+                this.levelName = levelData.name;
+                // BUG FIX: Use deep copy to prevent reference bugs
+                this.entities = JSON.parse(JSON.stringify(levelData.entities));
+                this.player.spawnPos = JSON.parse(JSON.stringify(levelData.spawn));
+                this.player.reset(this.player.spawnPos.x, this.player.spawnPos.y);
+                
+                this.maxTries = levelData.maxTries || 10;
+                this.starTries = JSON.parse(JSON.stringify(levelData.starTries || { one: 8, two: 5, three: 3 }));
+                this.physics = { ...DEFAULT_PHYSICS, ...JSON.parse(JSON.stringify(levelData.physics || {})) };
+                
+                this.attemptsRemaining = this.maxTries;
+                this.attemptsUsed = 0;
+                
+                this.levelWidth = levelData.width || this.canvas.width;
+                this.levelHeight = levelData.height || this.canvas.height;
+                this.gameCamera.levelWidth = this.levelWidth;
+                this.gameCamera.levelHeight = this.levelHeight;
+            }
+
+            loadLevelsFromStorage() {
+                const levels = localStorage.getItem('dragPlatformerLevels');
+                if (levels) {
+                    this.savedLevels = JSON.parse(levels);
+                    
+                    this.savedLevels.forEach(level => {
+                        if (level.attempts) {
+                            level.maxTries = level.attempts;
+                            level.starTries = { one: level.attempts, two: Math.floor(level.attempts/2), three: 1 };
+                            delete level.attempts;
+                        }
+                        if (!level.starTries) {
+                            level.maxTries = level.maxTries || 10;
+                            level.starTries = { one: 8, two: 5, three: 3 };
+                        }
+                    });
+                    
+                } else {
+                    this.savedLevels = [
+                        {
+                            name: "Test Level",
+                            entities: [
+                                { x: 0, y: this.canvas.height - 40, w: this.canvas.width, h: 40, c: '#888', t: 'platform', rotation: 0 },
+                                { x: 200, y: this.canvas.height - 70, w: 150, h: 30, c: '#AADDFF', t: 'ice', rotation: 0 },
+                                { x: 500, y: 500, w: 200, h: 30, c: '#888', t: 'platform', rotation: 0 },
+                                { x: 800, y: 400, w: 150, h: 30, c: '#888', t: 'platform', rotation: 0 },
+                                { x: 600, y: this.canvas.height - 70, w: 30, h: 30, c: '#FF4444', t: 'spike', rotation: 0 },
+                                { x: 900, y: this.canvas.height - 80, w: 80, h: 40, c: '#FF8800', t: 'lava', rotation: 0 },
+                                { x: this.canvas.width - 150, y: 300, w: 50, h: 50, c: '#00FF00', t: 'finish', rotation: 0 },
+                            ],
+                            spawn: { x: 100, y: 600 },
+                            maxTries: 10,
+                            starTries: { one: 8, two: 5, three: 3 },
+                            physics: { ...DEFAULT_PHYSICS },
+                            width: this.canvas.width,
+                            height: this.canvas.height
+                        }
+                    ];
+                }
+            }
+            
+            loadStarProgress() {
+                const progress = localStorage.getItem('dragPlatformerStars');
+                if (progress) {
+                    this.starProgress = JSON.parse(progress);
+                } else {
+                    this.starProgress = {};
+                }
+            }
+            
+            saveStarProgress() {
+                localStorage.setItem('dragPlatformerStars', JSON.stringify(this.starProgress));
+            }
+            
+            // --- MODIFIED: Modal Functions ---
+            
+            // Renamed from stopTextInput
+            stopModal(didConfirm) {
+                if (!this.isListeningForText) return;
+                
+                this.isListeningForText = false;
+                const value = this.modalInput.value;
+                this.inputModal.classList.add('hidden');
+                this.state = this.previousState;
+                
+                if (didConfirm && this.promptCallback) {
+                    this.promptCallback(value); // Pass value on confirm
+                }
+                if (!didConfirm && this.promptCallback) {
+                    this.promptCallback(null); // Pass null on cancel
+                }
+                this.promptCallback = null;
+            }
+            
+            // Renamed from promptForInput
+            promptForText(message, initialValue, isNumeric, callback) {
+                this.previousState = this.state;
+                this.state = STATE.PROMPT_INPUT;
+                this.isListeningForText = true;
+                
+                this.modalTitle.textContent = message;
+                this.modalInput.type = isNumeric ? 'number' : 'text';
+                this.modalInput.value = initialValue;
+                this.modalInput.step = isNumeric ? '0.01' : 'any';
+                
+                this.modalInput.classList.remove('hidden'); // Show input
+                this.inputModal.classList.remove('hidden');
+                
+                this.modalInput.focus();
+                this.modalInput.select();
+                
+                this.promptCallback = callback; // Expects (value) or (null)
+            }
+            
+            // NEW: promptForConfirm
+            promptForConfirm(message, callback) {
+                this.previousState = this.state;
+                this.state = STATE.PROMPT_INPUT; // Reuse pause state
+                this.isListeningForText = true;
+                
+                this.modalTitle.textContent = message;
+                this.modalInput.classList.add('hidden'); // Hide input!
+                this.inputModal.classList.remove('hidden');
+                
+                this.modalConfirm.focus();
+                
+                // Callback will receive "" on confirm, null on cancel
+                this.promptCallback = callback; 
+            }
+
+            
+            // MODIFIED: saveLevelToStorage (Deep Copy)
+            saveLevelToStorage(levelName) {
+                // BUG FIX: Deep copy all objects and arrays
+                const newLevel = {
+                    name: levelName,
+                    entities: JSON.parse(JSON.stringify(this.editor.entities)),
+                    spawn: JSON.parse(JSON.stringify(this.editor.playerSpawn)),
+                    maxTries: this.editor.levelSettings.maxTries,
+                    starTries: JSON.parse(JSON.stringify(this.editor.levelSettings.starTries)),
+                    physics: JSON.parse(JSON.stringify(this.editor.levelSettings.physics)),
+                    width: this.editor.levelWidth,
+                    height: this.editor.levelHeight
+                };
+                
+                const existingIndex = this.savedLevels.findIndex(l => l.name === levelName);
+                if (existingIndex > -1) {
+                    this.savedLevels[existingIndex] = newLevel;
+                } else {
+                    this.savedLevels.push(newLevel);
+                }
+                localStorage.setItem('dragPlatformerLevels', JSON.stringify(this.savedLevels));
+                
+                if (this.starProgress[levelName] === undefined) {
+                    this.starProgress[levelName] = 0;
+                    this.saveStarProgress();
+                }
+                
+                this.showMessage("Level Saved!", STATE.LEVEL_EDITOR);
+            }
+            
+            showMessage(text, nextState) {
+                this.messageText = text;
+                this.messageTimer = 120;
+                this.state = STATE.SHOW_MESSAGE;
+                this.nextState = nextState;
+            }
+
+            clearAllLevels() {
+                this.savedLevels = [];
+                localStorage.removeItem('dragPlatformerLevels');
+                this.starProgress = {};
+                localStorage.removeItem('dragPlatformerStars');
+                this.loadLevelsFromStorage();
+            }
+
+            promptForImport(toEditor = false) {
+                // Use new modal function name
+                this.promptForText("Paste Level Code:", "", false, (levelCode) => {
+                    if (levelCode) {
+                        this.importLevel(levelCode, toEditor);
+                    } else {
+                        this.showMessage("Import Canceled", this.previousState);
+                    }
+                });
+                this.state = STATE.PROMPT_IMPORT;
+            }
+            
+            // MODIFIED: importLevel (Deep Copy)
+            importLevel(levelCode, toEditor = false) {
+                if (!levelCode) {
+                    this.showMessage("Invalid Code!", this.previousState);
+                    return;
+                }
+                try {
+                    const jsonString = LZString.decompressFromEncodedURIComponent(levelCode);
+                    if (!jsonString) throw new Error("Invalid code (decompression failed).");
+                    
+                    const levelObject = JSON.parse(jsonString);
+                    if (!levelObject || !levelObject.name || !levelObject.entities || !levelObject.spawn) {
+                        throw new Error("Invalid level data structure.");
+                    }
+                    
+                    if (toEditor) {
+                        // BUG FIX: Deep copy all imported data
+                        this.editor.entities = JSON.parse(JSON.stringify(levelObject.entities));
+                        this.editor.playerSpawn = JSON.parse(JSON.stringify(levelObject.spawn));
+                        this.editor.levelWidth = levelObject.width || this.canvas.width;
+                        this.editor.levelHeight = levelObject.height || this.canvas.height;
+                        this.editor.levelSettings.maxTries = levelObject.maxTries || 10;
+                        this.editor.levelSettings.starTries = JSON.parse(JSON.stringify(levelObject.starTries || { one: 8, two: 5, three: 3 }));
+                        this.editor.levelSettings.physics = JSON.parse(JSON.stringify(levelObject.physics || { ...DEFAULT_PHYSICS }));
+                        
+                        this.updateEditorCameraSize();
+                        this.state = STATE.LEVEL_EDITOR;
+                        this.showMessage("Level Loaded in Editor!", STATE.LEVEL_EDITOR);
+                        
+                    } else {
+                        // This path already does a full save, which is fine
+                        const existingIndex = this.savedLevels.findIndex(l => l.name === levelObject.name);
+                        if (existingIndex > -1) {
+                            this.savedLevels[existingIndex] = levelObject;
+                        } else {
+                            this.savedLevels.push(levelObject);
+                        }
+                        localStorage.setItem('dragPlatformerLevels', JSON.stringify(this.savedLevels));
+                        
+                        if (this.starProgress[levelObject.name] === undefined) {
+                            this.starProgress[levelObject.name] = 0;
+                            this.saveStarProgress();
+                        }
+                        
+                        this.showMessage("Level Imported!", STATE.LEVEL_SELECT);
+                    }
+                    
+                } catch (e) {
+                    console.error("Import failed:", e);
+                    this.showMessage("Invalid Code!", this.previousState);
+                }
+            }
+            
+            showShareModal(levelName) {
+                const level = this.savedLevels.find(l => l.name === levelName);
+                if (!level) return;
+                
+                try {
+                    const jsonString = JSON.stringify(level);
+                    this.shareCode = LZString.compressToEncodedURIComponent(jsonString);
+                    this.shareModalTitle.textContent = `Share Code for: ${level.name}`;
+                    this.shareCodeText.value = this.shareCode;
+
+                    this.previousState = this.state;
+                    this.state = STATE.SHOW_SHARE_CODE;
+                    this.shareModal.classList.remove('hidden');
+                    
+                } catch (e) {
+                    console.error("Share failed:", e);
+                    this.showMessage("Could not generate code.", STATE.LEVEL_SELECT);
+                }
+            }
+            
+            hideShareModal() {
+                this.shareModal.classList.add('hidden');
+                this.state = this.previousState;
+            }
+            
+            copyToClipboard() {
+                try {
+                    this.shareCodeText.select();
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(this.shareCodeText.value).then(() => {
+                            this.showMessage("Code Copied!", this.state);
+                        }).catch(err => {
+                            document.execCommand('copy');
+                            this.showMessage("Code Copied!", this.state);
+                        });
+                    } else {
+                        document.execCommand('copy');
+                        this.showMessage("Code Copied!", this.state);
+                    }
+                } catch (e) {
+                    console.error("Copy failed:", e);
+                    this.showMessage("Copy failed!", this.state);
+                }
+            }
+
+            // --- INPUT HANDLING ---
+            setupInputListeners() {
+                this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e, false));
+                this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e, false));
+                this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e, false));
+                this.canvas.addEventListener('mouseleave', (e) => this.handleMouseLeave(e));
+                this.canvas.addEventListener('touchstart', (e) => { e.preventDefault(); this.handleMouseDown(e, true); }, { passive: false });
+                this.canvas.addEventListener('touchmove', (e) => { e.preventDefault(); this.handleMouseMove(e, true); }, { passive: false });
+                this.canvas.addEventListener('touchend', (e) => { e.preventDefault(); this.handleMouseUp(e, true); }, { passive: false });
+                this.canvas.addEventListener('wheel', (e) => this.handleWheel(e), { passive: false });
+                document.addEventListener('keydown', (e) => this.handleKeyDown(e));
+                
+                // MODIFIED: Use new modal stop function
+                this.modalConfirm.onclick = () => this.stopModal(true);
+                this.modalCancel.onclick = () => this.stopModal(false);
+                this.modalInput.onkeydown = (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        this.stopModal(true);
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        this.stopModal(false);
+                    }
+                    e.stopPropagation();
+                };
+                
+                this.shareModalClose.onclick = () => this.hideShareModal();
+                this.shareModalCopy.onclick = () => this.copyToClipboard();
+            }
+            
+            handleKeyDown(e) {
+                if (document.activeElement === this.modalInput || document.activeElement === this.shareCodeText) {
+                    return;
+                }
+                
+                if (this.state === STATE.LEVEL_EDITOR) {
+                    if (e.key === 'Delete' || e.key === 'Backspace') {
+                        if (this.editor.selectedEntityIndex !== null) {
+                            e.preventDefault();
+                            this.editor.entities.splice(this.editor.selectedEntityIndex, 1);
+                            this.editor.selectedEntityIndex = null;
+                        }
+                    }
+                    if (e.key.toLowerCase() === 'r') {
+                        e.preventDefault();
+                        this.rotateSelectedEntity();
+                    }
+                    if (e.key.toLowerCase() === 't') {
+                        e.preventDefault();
+                        this.updateEditor('test');
+                    }
+                }
+                
+                if (this.state === STATE.TESTING_LEVEL) {
+                     if (e.key.toLowerCase() === 't') {
+                        e.preventDefault();
+                        this.state = STATE.LEVEL_EDITOR;
+                     }
+                }
+            }
+            
+            handleWheel(e) {
+                if (this.state === STATE.LEVEL_EDITOR && this.mouse.x > this.canvas.width - this.editor.sidebarWidth) {
+                    e.preventDefault();
+                    this.editor.sidebarScrollY += e.deltaY * 0.5;
+                    const scrollAreaHeight = this.canvas.height - 50 - 140;
+                    const maxScroll = Math.max(0, this.editor.sidebarContentHeight - scrollAreaHeight);
+                    this.editor.sidebarScrollY = Math.max(0, Math.min(this.editor.sidebarScrollY, maxScroll));
+                }
+            }
+
+            getMousePos(event, isTouch = false) {
+                const rect = this.canvas.getBoundingClientRect();
+                const scaleX = this.canvas.width / rect.width;
+                const scaleY = this.canvas.height / rect.height;
+                const clientX = isTouch ? (event.touches[0] || event.changedTouches[0]).clientX : event.clientX;
+                const clientY = isTouch ? (event.touches[0] || event.changedTouches[0]).clientY : event.clientY;
+                return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+            }
+
+            checkButtonClick() {
+                let clickedButtonId = null;
+                for (let i = this.buttons.length - 1; i >= 0; i--) {
+                    const btn = this.buttons[i];
+                    if ( this.mouse.x > btn.x && this.mouse.x < btn.x + btn.w &&
+                         this.mouse.y > btn.y && this.mouse.y < btn.y + btn.h ) 
+                    {
+                        clickedButtonId = btn.id;
+                        break;
+                    }
+                }
+                return clickedButtonId;
+            }
+
+            handleMouseDown(event, isTouch = false) {
+                if (this.isListeningForText || this.state === STATE.SHOW_SHARE_CODE) {
+                    return;
+                }
+                
+                this.mouse.isDown = true;
+                this.mouse.clicked = false; 
+                const pos = this.getMousePos(event, isTouch);
+                this.mouse.x = pos.x;
+                this.mouse.y = pos.y;
+                
+                const editorView = {
+                    x: 0, y: 0,
+                    w: this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE,
+                    h: this.canvas.height - SCROLLBAR_SIZE
+                };
+                
+                const worldMouse = this.editorCamera.toWorldCoords(this.mouse.x, this.mouse.y);
+
+                if (this.state === STATE.PLAYING || this.state === STATE.TESTING_LEVEL) {
+                    if (this.attemptsRemaining <= 0 || !this.player.isStopped(this.physics)) return;
+                    this.isDragging = true;
+                    this.dragStart = { x: this.mouse.x, y: this.mouse.y };
+                    this.dragEnd = { x: this.mouse.x, y: this.mouse.y };
+
+                } else if (this.state === STATE.LEVEL_EDITOR) {
+                    if (this.mouse.x >= this.canvas.width - this.editor.sidebarWidth) {
+                        return;
+                    }
+                    
+                    const { scrollbarX, scrollbarY } = this.getScrollbarRects(editorView);
+                    
+                    if (this.mouse.x > scrollbarX.x && this.mouse.x < scrollbarX.x + scrollbarX.w &&
+                        this.mouse.y > scrollbarX.y && this.mouse.y < scrollbarX.y + scrollbarX.h) {
+                        this.editor.isPanningX = true;
+                        this.editor.panDragOffset = this.mouse.x - scrollbarX.thumbX;
+                        return;
+                    }
+                    if (this.mouse.x > scrollbarY.x && this.mouse.x < scrollbarY.x + scrollbarY.w &&
+                        this.mouse.y > scrollbarY.y && this.mouse.y < scrollbarY.y + scrollbarY.h) {
+                        this.editor.isPanningY = true;
+                        this.editor.panDragOffset = this.mouse.y - scrollbarY.thumbY;
+                        return;
+                    }
+
+                    if (this.mouse.x > editorView.x && this.mouse.x < editorView.x + editorView.w &&
+                        this.mouse.y > editorView.y && this.mouse.y < editorView.y + editorView.h) 
+                    {
+                        if (this.editor.selectedTool === 'select') {
+                            const handle = this.getHandleAt(worldMouse.x, worldMouse.y);
+                            if (handle) {
+                                this.editor.isResizing = handle;
+                                return;
+                            }
+                            const clickedIndex = this.getEntityAt(worldMouse.x, worldMouse.y);
+                            if (clickedIndex > -1) {
+                                this.editor.selectedEntityIndex = clickedIndex;
+                                const entity = this.editor.entities[clickedIndex];
+                                this.editor.dragOffset = { x: worldMouse.x - entity.x, y: worldMouse.y - entity.y };
+                                this.editor.isResizing = 'move';
+                            } else {
+                                this.editor.selectedEntityIndex = null;
+                            }
+                        } 
+                        else if (this.editor.selectedTool === 'duplicate') {
+                            const clickedIndex = this.getEntityAt(worldMouse.x, worldMouse.y);
+                            if (clickedIndex > -1) {
+                                const originalEntity = this.editor.entities[clickedIndex];
+                                const newEntity = JSON.parse(JSON.stringify(originalEntity));
+                                newEntity.x = worldMouse.x - newEntity.w / 2;
+                                newEntity.y = worldMouse.y - newEntity.h / 2;
+                                this.editor.entities.push(newEntity);
+                                this.editor.selectedEntityIndex = this.editor.entities.length - 1;
+                                this.editor.selectedTool = 'select';
+                                this.editor.isResizing = 'move';
+                                this.editor.dragOffset = { x: newEntity.w / 2, y: newEntity.h / 2 };
+                            }
+                        }
+                        else if (this.editor.selectedTool === 'rotate') {
+                            const clickedIndex = this.getEntityAt(worldMouse.x, worldMouse.y);
+                            if (clickedIndex > -1) {
+                                this.editor.selectedEntityIndex = clickedIndex;
+                                this.rotateSelectedEntity();
+                            }
+                        }
+                        else if (this.editor.selectedTool === 'player_spawn') {
+                            this.editor.playerSpawn = { x: worldMouse.x - this.player.size.w / 2, y: worldMouse.y - this.player.size.h / 2 };
+                        } else if (this.editor.selectedTool === 'erase') {
+                            this.eraseEntityAt(worldMouse.x, worldMouse.y);
+                        }
+                    }
+                }
+            }
+
+            handleMouseMove(event, isTouch = false) {
+                if (this.isListeningForText || this.state === STATE.SHOW_SHARE_CODE) {
+                    return;
+                }
+                
+                const pos = this.getMousePos(event, isTouch);
+                this.mouse.x = pos.x;
+                this.mouse.y = pos.y;
+                
+                const worldMouse = this.editorCamera.toWorldCoords(this.mouse.x, this.mouse.y);
+                
+                if ((this.state === STATE.PLAYING || this.state === STATE.TESTING_LEVEL) && this.isDragging) {
+                    this.dragEnd = { x: this.mouse.x, y: this.mouse.y };
+                } else if (this.state === STATE.LEVEL_EDITOR && this.mouse.isDown) {
+                    
+                    if (this.editor.isPanningX) {
+                        const editorViewW = this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE;
+                        const mouseX = this.mouse.x - this.editor.panDragOffset;
+                        const percent = mouseX / (editorViewW - this.getScrollbarRects().scrollbarX.thumbW);
+                        this.editorCamera.pos.x = percent * (this.editor.levelWidth - this.editorCamera.width);
+                        this.editorCamera.clampPosition();
+                        return;
+                    }
+                    if (this.editor.isPanningY) {
+                        const editorViewH = this.canvas.height - SCROLLBAR_SIZE;
+                        const mouseY = this.mouse.y - this.editor.panDragOffset;
+                        const percent = mouseY / (editorViewH - this.getScrollbarRects().scrollbarY.thumbH);
+                        this.editorCamera.pos.y = percent * (this.editor.levelHeight - this.editorCamera.height);
+                        this.editorCamera.clampPosition();
+                        return;
+                    }
+
+                    if (this.editor.isResizing && this.editor.selectedEntityIndex !== null) {
+                        const entity = this.editor.entities[this.editor.selectedEntityIndex];
+                        switch (this.editor.isResizing) {
+                            case 'move':
+                                entity.x = worldMouse.x - this.editor.dragOffset.x;
+                                entity.y = worldMouse.y - this.editor.dragOffset.y;
+                                break;
+                            case 'right':
+                                entity.w = Math.max(10, worldMouse.x - entity.x);
+                                break;
+                            case 'left': {
+                                const oldRight = entity.x + entity.w;
+                                entity.x = Math.min(worldMouse.x, oldRight - 10);
+                                entity.w = oldRight - entity.x;
+                                break;
+                            }
+                            case 'bottom':
+                                entity.h = Math.max(10, worldMouse.y - entity.y);
+                                break;
+                            case 'top': {
+                                const oldBottom = entity.y + entity.h;
+                                entity.y = Math.min(worldMouse.y, oldBottom - 10);
+                                entity.h = oldBottom - entity.y;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            handleMouseUp(event, isTouch = false) {
+                if (this.isListeningForText || this.state === STATE.SHOW_SHARE_CODE) {
+                    return;
+                }
+                
+                const pos = this.getMousePos(event, isTouch);
+                this.mouse.x = pos.x;
+                this.mouse.y = pos.y;
+                
+                if (!this.mouse.clicked) this.mouse.clicked = true; 
+                this.mouse.isDown = false;
+                
+                if (this.state === STATE.PLAYING || this.state === STATE.TESTING_LEVEL) {
+                    if (this.isDragging) {
+                        this.isDragging = false;
+                        let forceX = (this.dragStart.x - this.dragEnd.x);
+                        let forceY = (this.dragStart.y - this.dragEnd.y);
+                        const magnitude = Math.sqrt(forceX * forceX + forceY * forceY);
+                        if (magnitude > this.physics.maxLaunch / this.physics.launchPower) {
+                            const scale = (this.physics.maxLaunch / this.physics.launchPower) / magnitude;
+                            forceX *= scale;
+                            forceY *= scale;
+                        }
+                        this.player.applyForce(forceX * this.physics.launchPower, forceY * this.physics.launchPower);
+                        this.attemptsRemaining--;
+                        this.attemptsUsed++;
+                    }
+                } else if (this.state === STATE.LEVEL_EDITOR) {
+                    this.editor.isResizing = null;
+                    this.editor.isPanningX = false;
+                    this.editor.isPanningY = false;
+                }
+            }
+
+            handleMouseLeave(event) {
+                this.mouse.isDown = false;
+                if (this.state === STATE.PLAYING || this.state === STATE.TESTING_LEVEL) this.isDragging = false;
+                if (this.state === STATE.LEVEL_EDITOR) {
+                    this.editor.isResizing = null;
+                    this.editor.isPanningX = false;
+                    this.editor.isPanningY = false;
+                }
+            }
+            
+            placeEntity(x, y) {
+                const tool = this.toolPalette.find(t => t.id === this.editor.selectedTool);
+                if (!tool) return;
+                let w = 150, h = 30;
+                if (tool.id === 'spike') { w = 30; h = 30; }
+                if (tool.id === 'lava') { w = 80; h = 40; }
+                if (tool.id === 'finish') { w = 50, h = 50; }
+                if (tool.id === 'ice') { w = 150, h = 30; }
+                
+                const newEntity = { x: x - w / 2, y: y - h / 2, w: w, h: h, c: tool.color, t: tool.id, rotation: 0 };
+                this.editor.entities.push(newEntity);
+                
+                this.editor.selectedTool = 'select';
+                this.editor.selectedEntityIndex = this.editor.entities.length - 1;
+            }
+            
+            rotateSelectedEntity() {
+                if (this.editor.selectedEntityIndex !== null) {
+                    const entity = this.editor.entities[this.editor.selectedEntityIndex];
+                    if (!entity) return;
+                    entity.rotation = (entity.rotation || 0) + 90;
+                    if (entity.rotation >= 360) {
+                        entity.rotation = 0;
+                    }
+                }
+            }
+            
+            getEntityAt(x, y) {
+                let foundIndex = -1;
+                for (let i = this.editor.entities.length - 1; i >= 0; i--) {
+                    const e = this.editor.entities[i];
+                    if (x > e.x && x < e.x + e.w && y > e.y && y < e.y + e.h) {
+                        foundIndex = i;
+                        break;
+                    }
+                }
+                return foundIndex;
+            }
+
+            eraseEntityAt(x, y) {
+                const index = this.getEntityAt(x,y);
+                if (index > -1) {
+                    if (index === this.editor.selectedEntityIndex) this.editor.selectedEntityIndex = null;
+                    this.editor.entities.splice(index, 1);
+                }
+            }
+
+            getHandleAt(x, y) {
+                if (this.editor.selectedEntityIndex === null) return null;
+                const entity = this.editor.entities[this.editor.selectedEntityIndex];
+                if(entity.rotation || 0) return null;
+                
+                const s = this.editor.resizeHandleSize;
+                if (x > entity.x + entity.w && x < entity.x + entity.w + s && y > entity.y && y < entity.y + entity.h) return 'right';
+                if (x < entity.x && x > entity.x - s && y > entity.y && y < entity.y + entity.h) return 'left';
+                if (y > entity.y + entity.h && y < entity.y + entity.h + s && x > entity.x && x < entity.x + entity.w) return 'bottom';
+                if (y < entity.y && y > entity.y - s && x > entity.x && x < entity.x + entity.w) return 'top';
+                return null;
+            }
+
+            // --- UPDATE METHODS ---
+            update() {
+                if (this.isListeningForText || this.state === STATE.SHOW_SHARE_CODE) {
+                    if (this.state === STATE.SHOW_MESSAGE) {
+                         this.updateShowMessage();
+                    }
+                    if (this.mouse.clicked) this.mouse.clicked = false;
+                    return;
+                }
+                
+                let clickedButtonId = null;
+                if (this.mouse.clicked) clickedButtonId = this.checkButtonClick();
+
+                switch(this.state) {
+                    case STATE.MAIN_MENU: this.updateMainMenu(clickedButtonId); break;
+                    case STATE.LEVEL_SELECT: this.updateLevelSelect(clickedButtonId); break;
+                    case STATE.PLAYING: this.updatePlaying(); break;
+                    case STATE.TESTING_LEVEL: 
+                        this.updatePlaying();
+                        if (clickedButtonId === 'stop_testing') this.state = STATE.LEVEL_EDITOR;
+                        break;
+                    case STATE.GAME_OVER: this.updateGameOver(clickedButtonId); break;
+                    case STATE.LEVEL_WON: this.updateLevelWon(clickedButtonId); break;
+                    case STATE.LEVEL_EDITOR: this.updateEditor(clickedButtonId); break;
+                    case STATE.SHOW_MESSAGE: this.updateShowMessage(); break;
+                    case STATE.PROMPT_INPUT: break;
+                    case STATE.PROMPT_IMPORT: break;
+                    case STATE.SHOW_SHARE_CODE: break;
+                }
+                
+                if (this.mouse.clicked) this.mouse.clicked = false;
+            }
+            
+            updateMainMenu(clickedButtonId) {
+                if (clickedButtonId === 'start') this.state = STATE.LEVEL_SELECT;
+                else if (clickedButtonId === 'editor') this.state = STATE.LEVEL_EDITOR;
+            }
+
+            updateLevelSelect(clickedButtonId) {
+                if (clickedButtonId === 'menu') {
+                    this.state = STATE.MAIN_MENU;
+                } else if (clickedButtonId === 'clear_levels') {
+                    this.clearAllLevels();
+                } else if (clickedButtonId === 'import_level') {
+                    this.promptForImport(false);
+                } else if (clickedButtonId === 'import_to_editor') {
+                    this.promptForImport(true);
+                }
+                
+                const levelClicked = this.savedLevels.find(l => l.name === clickedButtonId);
+                if (levelClicked) {
+                    this.loadLevel(levelClicked);
+                    this.previousState = STATE.PLAYING; 
+                    this.state = STATE.PLAYING;
+                }
+                
+                if (clickedButtonId && clickedButtonId.startsWith('share_')) {
+                    const levelName = clickedButtonId.replace('share_', '');
+                    this.showShareModal(levelName);
+                }
+            }
+            
+            updatePlaying() {
+                const collision = this.player.update(this.entities, this.physics, this.levelHeight);
+                this.gameCamera.update(this.player.getCenter());
+                
+                if (collision === 'hazard') this.state = STATE.GAME_OVER;
+                else if (collision === 'finish') this.state = STATE.LEVEL_WON;
+                if (this.attemptsRemaining <= 0 && this.player.isStopped(this.physics)) this.state = STATE.GAME_OVER;
+            }
+            
+            updateGameOver(clickedButtonId) {
+                if (clickedButtonId === 'restart') {
+                    const currentLevelData = { 
+                        name: this.levelName,
+                        entities: this.entities, spawn: this.player.spawnPos, 
+                        maxTries: this.maxTries, starTries: this.starTries,
+                        physics: this.physics,
+                        width: this.levelWidth, height: this.levelHeight
+                    };
+                    this.loadLevel(currentLevelData); 
+                    if (this.previousState === STATE.TESTING_LEVEL) this.state = STATE.TESTING_LEVEL;
+                    else this.state = STATE.PLAYING;
+                } else if (clickedButtonId === 'menu') {
+                    this.state = STATE.MAIN_MENU;
+                } else if (clickedButtonId === 'editor') { 
+                    this.state = STATE.LEVEL_EDITOR;
+                } else if (clickedButtonId === 'levels') {
+                    this.state = STATE.LEVEL_SELECT;
+                }
+            }
+            
+            updateLevelWon(clickedButtonId) {
+                 let starsWon = 0;
+                 if (this.attemptsUsed <= this.starTries.three) starsWon = 3;
+                 else if (this.attemptsUsed <= this.starTries.two) starsWon = 2;
+                 else if (this.attemptsUsed <= this.starTries.one) starsWon = 1;
+                 
+                 const oldStars = this.starProgress[this.levelName] || 0;
+                 if (starsWon > oldStars) {
+                     this.starProgress[this.levelName] = starsWon;
+                     this.saveStarProgress();
+                 }
+            
+                 if (clickedButtonId === 'next') {
+                    if (this.previousState === STATE.TESTING_LEVEL) this.state = STATE.LEVEL_EDITOR;
+                    else this.state = STATE.LEVEL_SELECT;
+                } else if (clickedButtonId === 'menu') {
+                    this.state = STATE.MAIN_MENU;
+                } else if (clickedButtonId === 'restart') { 
+                    const currentLevelData = { 
+                        name: this.levelName,
+                        entities: this.entities, spawn: this.player.spawnPos, 
+                        maxTries: this.maxTries, starTries: this.starTries,
+                        physics: this.physics,
+                        width: this.levelWidth, height: this.levelHeight
+                    };
+                    this.loadLevel(currentLevelData);
+                    this.state = this.previousState;
+                } else if (clickedButtonId === 'levels') {
+                    this.state = STATE.LEVEL_SELECT;
+                }
+            }
+            
+            updateEditor(clickedButtonId) {
+                if (this.isListeningForText) return;
+                
+                const editorViewW = this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE;
+                const physicsStep = { gravity: 0.01, launchPower: 0.01, maxLaunch: 1, groundFriction: 0.005, iceFriction: 0.001, levelSize: 100, tries: 1 };
+                
+                const textFields = [
+                    'max_tries', 'star_1', 'star_2', 'star_3',
+                    'level_w', 'level_h', 'gravity', 
+                    'launch', 'max_launch', 'friction', 'ice_friction'
+                ];
+                for (const field of textFields) {
+                    if (clickedButtonId === `${field}_text`) {
+                        let isNumeric = true;
+                        let currentValue;
+                        let message = `Enter ${field.replace('_', ' ')}:`;
+                        
+                        switch(field) {
+                            case 'max_tries': currentValue = this.editor.levelSettings.maxTries; break;
+                            case 'star_1': currentValue = this.editor.levelSettings.starTries.one; break;
+                            case 'star_2': currentValue = this.editor.levelSettings.starTries.two; break;
+                            case 'star_3': currentValue = this.editor.levelSettings.starTries.three; break;
+                            case 'level_w': currentValue = this.editor.levelWidth; break;
+                            case 'level_h': currentValue = this.editor.levelHeight; break;
+                            case 'gravity': currentValue = this.editor.levelSettings.physics.gravity; break;
+                            case 'launch': currentValue = this.editor.levelSettings.physics.launchPower; break;
+                            case 'max_launch': currentValue = this.editor.levelSettings.physics.maxLaunch; break;
+                            case 'friction': currentValue = this.editor.levelSettings.physics.groundFriction; break;
+                            case 'ice_friction': currentValue = this.editor.levelSettings.physics.iceFriction; break;
+                        }
+                        
+                        const callback = (value) => {
+                            // value is null if cancelled, string if confirmed
+                            if (value === null) return; 
+                            
+                            const numValue = parseFloat(value);
+                            if (isNaN(numValue)) return;
+                            
+                            switch(field) {
+                                case 'max_tries': this.editor.levelSettings.maxTries = Math.max(1, Math.floor(numValue)); break;
+                                case 'star_1': this.editor.levelSettings.starTries.one = Math.max(1, Math.floor(numValue)); break;
+                                case 'star_2': this.editor.levelSettings.starTries.two = Math.max(1, Math.floor(numValue)); break;
+                                case 'star_3': this.editor.levelSettings.starTries.three = Math.max(1, Math.floor(numValue)); break;
+                                case 'level_w':
+                                    const newWidth = Math.max(editorViewW, numValue);
+                                    this.editor.levelWidth = newWidth;
+                                    break;
+                                case 'level_h':
+                                    const newHeight = Math.max(this.canvas.height - SCROLLBAR_SIZE, numValue);
+                                    const diff = newHeight - this.editor.levelHeight;
+                                    if (diff > 0) { this.shiftEntities(0, diff); this.editorCamera.pos.y += diff; } 
+                                    else if (diff < 0) { this.shiftEntities(0, diff); this.editorCamera.pos.y += diff; }
+                                    this.editor.levelHeight = newHeight;
+                                    break;
+                                case 'gravity': this.editor.levelSettings.physics.gravity = Math.max(0, numValue); break;
+                                case 'launch': this.editor.levelSettings.physics.launchPower = Math.max(0.01, numValue); break;
+                                case 'max_launch': this.editor.levelSettings.physics.maxLaunch = Math.max(1, numValue); break;
+                                case 'friction': this.editor.levelSettings.physics.groundFriction = Math.max(0.01, Math.min(1, numValue)); break;
+                                case 'ice_friction': this.editor.levelSettings.physics.iceFriction = Math.max(0.01, Math.min(1, numValue)); break;
+                            }
+                            
+                            if (field === 'level_w' || field === 'level_h') this.updateEditorCameraSize();
+                        };
+                        
+                        this.promptForText(message, currentValue, isNumeric, callback);
+                        return;
+                    }
+                }
+
+                if (clickedButtonId === 'max_tries_inc') this.editor.levelSettings.maxTries++;
+                if (clickedButtonId === 'max_tries_dec') if (this.editor.levelSettings.maxTries > 1) this.editor.levelSettings.maxTries--;
+                if (clickedButtonId === 'star_1_inc') this.editor.levelSettings.starTries.one++;
+                if (clickedButtonId === 'star_1_dec') if (this.editor.levelSettings.starTries.one > 1) this.editor.levelSettings.starTries.one--;
+                if (clickedButtonId === 'star_2_inc') this.editor.levelSettings.starTries.two++;
+                if (clickedButtonId === 'star_2_dec') if (this.editor.levelSettings.starTries.two > 1) this.editor.levelSettings.starTries.two--;
+                if (clickedButtonId === 'star_3_inc') this.editor.levelSettings.starTries.three++;
+                if (clickedButtonId === 'star_3_dec') if (this.editor.levelSettings.starTries.three > 1) this.editor.levelSettings.starTries.three--;
+
+                if (clickedButtonId === 'gravity_inc') this.editor.levelSettings.physics.gravity += physicsStep.gravity;
+                if (clickedButtonId === 'gravity_dec') this.editor.levelSettings.physics.gravity -= physicsStep.gravity;
+                if (clickedButtonId === 'launch_inc') this.editor.levelSettings.physics.launchPower += physicsStep.launchPower;
+                if (clickedButtonId === 'launch_dec') this.editor.levelSettings.physics.launchPower -= physicsStep.launchPower;
+                if (clickedButtonId === 'max_launch_inc') this.editor.levelSettings.physics.maxLaunch += physicsStep.maxLaunch;
+                if (clickedButtonId === 'max_launch_dec') this.editor.levelSettings.physics.maxLaunch -= physicsStep.maxLaunch;
+                if (clickedButtonId === 'friction_inc') this.editor.levelSettings.physics.groundFriction += physicsStep.groundFriction;
+                if (clickedButtonId === 'friction_dec') this.editor.levelSettings.physics.groundFriction -= physicsStep.groundFriction;
+                if (clickedButtonId === 'ice_friction_inc') this.editor.levelSettings.physics.iceFriction += physicsStep.iceFriction;
+                if (clickedButtonId === 'ice_friction_dec') this.editor.levelSettings.physics.iceFriction -= physicsStep.iceFriction;
+                
+                const shiftEntities = (dx, dy) => {
+                    this.editor.entities.forEach(e => { e.x += dx; e.y += dy; });
+                    this.editor.playerSpawn.x += dx;
+                    this.editor.playerSpawn.y += dy;
+                };
+                
+                if (clickedButtonId === 'level_w_inc') this.editor.levelWidth += physicsStep.levelSize;
+                if (clickedButtonId === 'level_w_dec') if (this.editor.levelWidth > editorViewW) this.editor.levelWidth -= physicsStep.levelSize;
+                if (clickedButtonId === 'level_h_inc') {
+                    this.editor.levelHeight += physicsStep.levelSize;
+                    shiftEntities(0, physicsStep.levelSize);
+                    this.editorCamera.pos.y += physicsStep.levelSize;
+                }
+                if (clickedButtonId === 'level_h_dec') {
+                    if (this.editor.levelHeight > this.canvas.height - SCROLLBAR_SIZE) {
+                        this.editor.levelHeight -= physicsStep.levelSize;
+                        shiftEntities(0, -physicsStep.levelSize);
+                        this.editorCamera.pos.y -= physicsStep.levelSize;
+                    }
+                }
+                
+                if (['level_w_inc', 'level_w_dec', 'level_h_inc', 'level_h_dec'].includes(clickedButtonId)) {
+                    this.updateEditorCameraSize();
+                }
+
+                this.editor.levelSettings.physics.gravity = Math.max(0, this.editor.levelSettings.physics.gravity);
+                this.editor.levelSettings.physics.launchPower = Math.max(0.01, this.editor.levelSettings.physics.launchPower);
+                this.editor.levelSettings.physics.maxLaunch = Math.max(1, this.editor.levelSettings.physics.maxLaunch);
+                this.editor.levelSettings.physics.groundFriction = Math.max(0.01, Math.min(1, this.editor.levelSettings.physics.groundFriction));
+                this.editor.levelSettings.physics.iceFriction = Math.max(0.01, Math.min(1, this.editor.levelSettings.physics.iceFriction));
+
+
+                if (clickedButtonId === 'menu') this.state = STATE.MAIN_MENU;
+                else if (clickedButtonId === 'test') {
+                    this.loadLevel({ 
+                        name: "TEST_LEVEL",
+                        entities: this.editor.entities, 
+                        spawn: this.editor.playerSpawn, 
+                        maxTries: this.editor.levelSettings.maxTries, 
+                        starTries: this.editor.levelSettings.starTries,
+                        physics: this.editor.levelSettings.physics,
+                        width: this.editor.levelWidth, 
+                        height: this.editor.levelHeight
+                    });
+                    this.previousState = STATE.TESTING_LEVEL; 
+                    this.state = STATE.TESTING_LEVEL;
+                } 
+                // MODIFIED: Save button logic with overwrite check
+                else if (clickedButtonId === 'save') {
+                    this.promptForText("Enter Level Name:", "My Level", false, (levelName) => {
+                        if (levelName === null) return; // User cancelled
+                        
+                        const existingIndex = this.savedLevels.findIndex(l => l.name === levelName);
+                        if (existingIndex > -1) {
+                            // Level exists, ask for confirmation
+                            this.promptForConfirm(`Overwrite '${levelName}'?`, (didConfirm) => {
+                                if (didConfirm !== null) { // User clicked OK (value is "")
+                                    this.saveLevelToStorage(levelName);
+                                }
+                            });
+                        } else {
+                            // New level, save directly
+                            this.saveLevelToStorage(levelName);
+                        }
+                    });
+                }
+                
+                const scrollAreaHeight = this.canvas.height - 50 - 140;
+                const maxScroll = Math.max(0, this.editor.sidebarContentHeight - scrollAreaHeight);
+                if (clickedButtonId === 'scroll_up') this.editor.sidebarScrollY = Math.max(0, this.editor.sidebarScrollY - 30);
+                if (clickedButtonId === 'scroll_down') this.editor.sidebarScrollY = Math.min(maxScroll, this.editor.sidebarScrollY + 30);
+
+                const tool = this.toolPalette.find(t => t.id === clickedButtonId);
+                if (tool) {
+                    this.editor.selectedTool = tool.id;
+                    if (tool.id !== 'select') this.editor.selectedEntityIndex = null;
+                    if (tool.id === 'rotate') this.rotateSelectedEntity();
+                }
+                
+                if (clickedButtonId === null && this.mouse.clicked) { 
+                    const editorViewW = this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE;
+                    const worldMouse = this.editorCamera.toWorldCoords(this.mouse.x, this.mouse.y);
+                    if (this.mouse.x < editorViewW && this.mouse.y < this.canvas.height - SCROLLBAR_SIZE) {
+                        if (this.editor.selectedTool && this.editor.selectedTool !== 'erase' && 
+                            this.editor.selectedTool !== 'player_spawn' && this.editor.selectedTool !== 'select' &&
+                            this.editor.selectedTool !== 'duplicate' && this.editor.selectedTool !== 'rotate') {
+                            this.placeEntity(worldMouse.x, worldMouse.y);
+                        }
+                    }
+                }
+            }
+            
+            updateEditorCameraSize() {
+                const editorViewW = this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE;
+                const editorViewH = this.canvas.height - SCROLLBAR_SIZE;
+                this.editorCamera.levelWidth = this.editor.levelWidth;
+                this.editorCamera.levelHeight = this.editor.levelHeight;
+                this.editorCamera.width = editorViewW;
+                this.editorCamera.height = editorViewH;
+                this.editorCamera.clampPosition();
+            }
+            
+            updateShowMessage() {
+                this.messageTimer--;
+                if (this.messageTimer <= 0) {
+                    if (this.state !== this.nextState) {
+                         this.state = this.nextState;
+                    }
+                }
+            }
+
+            // --- RENDER METHODS ---
+            render() {
+                this.ctx.fillStyle = '#1a1a1a';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                this.buttons = [];
+                this.canvas.style.cursor = 'default';
+                
+                switch(this.state) {
+                    case STATE.MAIN_MENU: this.renderMainMenu(); break;
+                    case STATE.LEVEL_SELECT: this.renderLevelSelect(); break;
+                    case STATE.PLAYING: this.renderPlaying(); break;
+                    case STATE.TESTING_LEVEL:
+                        this.renderPlaying();
+                        this.drawButton('stop_testing', 'Stop Testing (T)', this.canvas.width / 2 - 150, 20, 300, 40);
+                        break;
+                    case STATE.GAME_OVER: this.renderGameOver(); break;
+                    case STATE.LEVEL_WON: this.renderLevelWon(); break;
+                    case STATE.LEVEL_EDITOR: this.renderEditor(); break;
+                    case STATE.SHOW_MESSAGE: this.renderShowMessage(); break;
+                    
+                    case STATE.PROMPT_INPUT:
+                    case STATE.PROMPT_IMPORT:
+                        if (this.previousState === STATE.LEVEL_EDITOR) this.renderEditor();
+                        else if (this.previousState === STATE.LEVEL_SELECT) this.renderLevelSelect();
+                        else this.renderMainMenu();
+                        break;
+                    case STATE.SHOW_SHARE_CODE:
+                        if (this.previousState === STATE.LEVEL_SELECT) this.renderLevelSelect();
+                        else this.renderMainMenu();
+                        break;
+                }
+            }
+            
+            renderMainMenu() {
+                this.drawText('Best Plattformer oder so', this.canvas.width / 2, 150, 60, 'white', 'center');
+                this.drawButton('start', 'Levels', this.canvas.width / 2 - 150, 300, 300, 60);
+                this.drawButton('editor', 'Level Editor', this.canvas.width / 2 - 150, 400, 300, 60);
+            }
+
+            renderLevelSelect() {
+                this.drawText('Select Level', this.canvas.width / 2, 80, 50, 'white', 'center');
+                this.drawButton('menu', 'Main Menu', 20, 20, 180, 50);
+                this.drawButton('clear_levels', 'Clear All Levels', this.canvas.width - 790, 20, 250, 50, '#CC4444');
+                this.drawButton('import_level', 'Import to Play', this.canvas.width - 530, 20, 250, 50, '#48C');
+                this.drawButton('import_to_editor', 'Import to Editor', this.canvas.width - 270, 20, 250, 50, '#4C8');
+                
+                this.savedLevels.forEach((level, index) => {
+                    const col = index % 3;
+                    const row = Math.floor(index / 3);
+                    const btnX = 100 + col * 380;
+                    const btnY = 150 + row * 80;
+                    this.drawButton(level.name, level.name, btnX, btnY, 280, 60);
+                    
+                    const stars = this.starProgress[level.name] || 0;
+                    this.drawText('★', btnX + 40, btnY + 20, 20, stars >= 1 ? '#FFD700' : '#555', 'center');
+                    this.drawText('★', btnX + 70, btnY + 20, 20, stars >= 2 ? '#FFD700' : '#555', 'center');
+                    this.drawText('★', btnX + 100, btnY + 20, 20, stars >= 3 ? '#FFD700' : '#555', 'center');
+                    
+                    this.drawButton(`share_${level.name}`, 'Share', btnX + 290, btnY, 70, 60, '#555');
+                });
+            }
+            
+            renderPlaying() {
+                this.gameCamera.apply(this.ctx);
+                
+                if (this.levelWidth > this.canvas.width || this.levelHeight > this.canvas.height) {
+                    this.ctx.strokeStyle = '#444';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(0, 0, this.levelWidth, this.levelHeight);
+                }
+
+                this.entities.forEach(data => Entity.renderData(this.ctx, data));
+                this.player.render(this.ctx);
+                
+                this.gameCamera.restore(this.ctx);
+                
+                if (this.isDragging) {
+                    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                    this.ctx.lineWidth = 4;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.dragStart.x, this.dragStart.y);
+                    this.ctx.lineTo(this.dragEnd.x, this.dragEnd.y);
+                    this.ctx.stroke();
+                }
+                this.drawText(`Attempts: ${this.attemptsRemaining}`, this.canvas.width - 20, 40, 30, 'white', 'right');
+            }
+            
+            renderGameOver() {
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                this.drawText('Game Over', this.canvas.width / 2, 150, 60, 'red', 'center');
+                
+                if (this.previousState === STATE.TESTING_LEVEL) {
+                    this.drawButton('restart', 'Try Again', this.canvas.width / 2 - 150, 300, 300, 60);
+                    this.drawButton('editor', 'Back to Editor (T)', this.canvas.width / 2 - 150, 400, 300, 60);
+                } else {
+                    this.drawButton('restart', 'Restart', this.canvas.width / 2 - 150, 300, 300, 60);
+                    this.drawButton('levels', 'Levels', this.canvas.width / 2 - 150, 400, 300, 60);
+                }
+            }
+            
+            renderLevelWon() {
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                this.drawText('Level Complete!', this.canvas.width / 2, 150, 60, 'lime', 'center');
+                
+                 let starsWon = 0;
+                 if (this.attemptsUsed <= this.starTries.three) starsWon = 3;
+                 else if (this.attemptsUsed <= this.starTries.two) starsWon = 2;
+                 else if (this.attemptsUsed <= this.starTries.one) starsWon = 1;
+                 
+                this.drawText(`Attempts Used: ${this.attemptsUsed}`, this.canvas.width / 2, 220, 30, 'white', 'center');
+                
+                let starY = 270;
+                this.drawText('★', this.canvas.width / 2 - 40, starY, 40, starsWon >= 1 ? '#FFD700' : '#555', 'center');
+                this.drawText('★', this.canvas.width / 2, starY, 40, starsWon >= 2 ? '#FFD700' : '#555', 'center');
+                this.drawText('★', this.canvas.width / 2 + 40, starY, 40, starsWon >= 3 ? '#FFD700' : '#555', 'center');
+                
+                if (this.previousState === STATE.TESTING_LEVEL) {
+                    this.drawButton('restart', 'Try Again', this.canvas.width / 2 - 150, 350, 300, 60);
+                    this.drawButton('next', 'Back to Editor (T)', this.canvas.width / 2 - 150, 450, 300, 60);
+                } else {
+                    this.drawButton('restart', 'Try Again', this.canvas.width / 2 - 150, 350, 300, 60);
+                    this.drawButton('levels', 'Levels', this.canvas.width / 2 - 150, 450, 300, 60);
+                }
+            }
+            
+            renderEditorEntities() {
+                this.ctx.save();
+                this.ctx.beginPath();
+                this.ctx.rect(0, 0, this.editorCamera.width, this.editorCamera.height);
+                this.ctx.clip();
+                
+                this.editorCamera.apply(this.ctx);
+                
+                this.ctx.strokeStyle = '#555';
+                this.ctx.lineWidth = 4;
+                this.ctx.strokeRect(0, 0, this.editor.levelWidth, this.editor.levelHeight);
+                
+                this.editor.entities.forEach(data => Entity.renderData(this.ctx, data));
+                this.ctx.fillStyle = this.player.color;
+                this.ctx.globalAlpha = 0.6;
+                this.ctx.fillRect(this.editor.playerSpawn.x, this.editor.playerSpawn.y, this.player.size.w, this.player.size.h);
+                this.ctx.globalAlpha = 1.0;
+                this.ctx.strokeStyle = 'white';
+                this.ctx.strokeRect(this.editor.playerSpawn.x, this.editor.playerSpawn.y, this.player.size.w, this.player.size.h);
+
+                if (this.editor.selectedEntityIndex !== null && this.editor.entities[this.editor.selectedEntityIndex]) {
+                    const entity = this.editor.entities[this.editor.selectedEntityIndex];
+                    
+                    this.ctx.save();
+                    this.ctx.translate(entity.x + entity.w / 2, entity.y + entity.h / 2);
+                    this.ctx.rotate((entity.rotation || 0) * Math.PI / 180);
+                    
+                    const x = -entity.w / 2;
+                    const y = -entity.h / 2;
+                    const w = entity.w;
+                    const h = entity.h;
+                    
+                    const s = this.editor.resizeHandleSize;
+                    this.ctx.strokeStyle = '#00FFFF';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(x, y, w, h);
+                    
+                    if (!entity.rotation || entity.rotation === 0) {
+                        this.ctx.fillStyle = '#00FFFF';
+                        this.ctx.fillRect(x + w, y, s, h);
+                        this.ctx.fillRect(x - s, y, s, h);
+                        this.ctx.fillRect(x, y + h, w, s);
+                        this.ctx.fillRect(x, y - s, w, s);
+                    }
+                    this.ctx.restore();
+                }
+                
+                this.editorCamera.restore(this.ctx);
+                this.ctx.restore();
+            }
+            
+            getScrollbarRects(editorView) {
+                if (!editorView) {
+                    editorView = {
+                        w: this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE,
+                        h: this.canvas.height - SCROLLBAR_SIZE
+                    };
+                }
+
+                const thumbRatioX = editorView.w / this.editor.levelWidth;
+                const thumbW = Math.max(20, thumbRatioX * editorView.w);
+                const trackW = editorView.w - thumbW;
+                const thumbX = (this.editorCamera.pos.x / (this.editor.levelWidth - this.editorCamera.width)) * trackW;
+                
+                const thumbRatioY = editorView.h / this.editor.levelHeight;
+                const thumbH = Math.max(20, thumbRatioY * editorView.h);
+                const trackH = editorView.h - thumbH;
+                const thumbY = (this.editorCamera.pos.y / (this.editor.levelHeight - this.editorCamera.height)) * trackH;
+
+                return {
+                    scrollbarX: { x: 0, y: editorView.h, w: editorView.w, h: SCROLLBAR_SIZE, thumbX: thumbX || 0, thumbW: thumbW },
+                    scrollbarY: { x: editorView.w, y: 0, w: SCROLLBAR_SIZE, h: editorView.h, thumbY: thumbY || 0, thumbH: thumbH }
+                };
+            }
+            
+            renderEditor() {
+                if (this.editor.selectedTool === 'select') {
+                    this.canvas.style.cursor = 'default';
+                }
+
+                this.renderEditorEntities();
+                
+                const editorView = {
+                    w: this.canvas.width - this.editor.sidebarWidth - SCROLLBAR_SIZE,
+                    h: this.canvas.height - SCROLLBAR_SIZE
+                };
+                const { scrollbarX, scrollbarY } = this.getScrollbarRects(editorView);
+
+                this.ctx.fillStyle = '#111';
+                this.ctx.fillRect(scrollbarX.x, scrollbarX.y, scrollbarX.w, scrollbarX.h);
+                this.ctx.fillStyle = this.editor.isPanningX ? '#888' : '#555';
+                this.ctx.fillRect(scrollbarX.thumbX, scrollbarX.y, scrollbarX.thumbW, scrollbarX.h);
+                this.ctx.fillStyle = '#111';
+                this.ctx.fillRect(scrollbarY.x, scrollbarY.y, scrollbarY.w, scrollbarY.h);
+                this.ctx.fillStyle = this.editor.isPanningY ? '#888' : '#555';
+                this.ctx.fillRect(scrollbarY.x, scrollbarY.thumbY, scrollbarY.w, scrollbarY.thumbH);
+                this.ctx.fillStyle = '#111';
+                this.ctx.fillRect(editorView.w, editorView.h, SCROLLBAR_SIZE, SCROLLBAR_SIZE);
+
+                const sidebarWidth = this.editor.sidebarWidth;
+                const sidebarX = this.canvas.width - sidebarWidth;
+                const btnW = sidebarWidth - 20;
+                
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                this.ctx.fillRect(sidebarX, 0, sidebarWidth, this.canvas.height);
+                
+                this.drawButton('test', 'Test Level (T)', this.canvas.width - 190, this.canvas.height - 130, 180, 50);
+                this.drawButton('save', 'Save Level', this.canvas.width - 190, this.canvas.height - 70, 180, 50);
+                
+                this.drawButton('scroll_up', '▲', sidebarX + 10, 10, 85, 30);
+                this.drawButton('scroll_down', '▼', sidebarX + 105, 10, 85, 30);
+                
+                this.ctx.save();
+                this.ctx.beginPath();
+                const scrollAreaY = 50;
+                const scrollAreaHeight = this.canvas.height - 140 - scrollAreaY;
+                this.ctx.rect(sidebarX, scrollAreaY, sidebarWidth, scrollAreaHeight);
+                this.ctx.clip();
+                
+                this.ctx.translate(0, -this.editor.sidebarScrollY + scrollAreaY);
+                
+                let currentY = 0;
+                
+                const btnH = 40;
+                const btnMargin = 5;
+                this.toolPalette.forEach((tool) => {
+                    const btnY = currentY;
+                    currentY += btnH + btnMargin;
+                    const btnX = sidebarX + 10;
+                    
+                    this.drawButtonInScroll(tool.id, "", btnX, btnY, btnW, btnH);
+                    
+                    const iconSize = btnH - 10;
+                    const textX = btnX + iconSize + 15;
+                    
+                    if (tool.id === 'select' || tool.id === 'erase' || tool.id === 'duplicate' || tool.id === 'rotate') {
+                         this.drawText(tool.text, btnX + 10, btnY + btnH/2, 18, 'white', 'left');
+                    } else if (tool.id === 'player_spawn') {
+                        this.ctx.fillStyle = tool.color;
+                        this.ctx.fillRect(btnX + 5, btnY + 5, iconSize, iconSize);
+                        this.drawText(tool.text, textX, btnY + btnH/2, 18, 'white', 'left');
+                    } else {
+                        Entity.renderData(this.ctx, {x: btnX+5, y:btnY+5, w:iconSize, h:iconSize, c:tool.color, t:tool.id, rotation: 0});
+                        this.drawText(tool.text, textX, btnY + btnH/2, 18, 'white', 'left');
+                    }
+                });
+                
+                currentY += 10;
+                
+                const drawSetting = (id, text, value, decimals = 0, small = false) => {
+                    this.drawText(text, sidebarX + sidebarWidth / 2, currentY, 16, 'white', 'center');
+                    currentY += 20;
+                    
+                    const textVal = Number(value).toFixed(decimals);
+                    const textY = currentY;
+                    const fontSize = small ? 16 : 20;
+                    this.ctx.font = `bold ${fontSize}px Inter`;
+                    const textW = this.ctx.measureText(textVal).width + (small ? 10 : 20);
+                    const textX = sidebarX + (sidebarWidth - textW) / 2;
+                    
+                    const textBtnId = `${id}_text`;
+                    this.drawButtonInScroll(textBtnId, textVal, textX, textY - 15, textW, 30, '#111', fontSize);
+                    
+                    const btnY = currentY - 15;
+                    this.drawButtonInScroll(`${id}_dec`, '-', sidebarX + 10, btnY, 40, 30);
+                    this.drawButtonInScroll(`${id}_inc`, '+', sidebarX + btnW - 30, btnY, 40, 30);
+                    
+                    currentY += 30;
+                };
+                
+                drawSetting('max_tries', 'Max Tries', this.editor.levelSettings.maxTries, 0);
+                drawSetting('star_1', '1-Star Tries', this.editor.levelSettings.starTries.one, 0);
+                drawSetting('star_2', '2-Star Tries', this.editor.levelSettings.starTries.two, 0);
+                drawSetting('star_3', '3-Star Tries', this.editor.levelSettings.starTries.three, 0);
+                
+                drawSetting('level_w', 'Level Width', this.editor.levelWidth, 0);
+                drawSetting('level_h', 'Level Height', this.editor.levelHeight, 0);
+                
+                drawSetting('gravity', 'Gravity', this.editor.levelSettings.physics.gravity, 2, true);
+                drawSetting('launch', 'Launch Power', this.editor.levelSettings.physics.launchPower, 2, true);
+                drawSetting('max_launch', 'Max Launch', this.editor.levelSettings.physics.maxLaunch, 0, true);
+                drawSetting('friction', 'Ground Friction', this.editor.levelSettings.physics.groundFriction, 3, true);
+                drawSetting('ice_friction', 'Ice Friction', this.editor.levelSettings.physics.iceFriction, 3, true);
+
+                this.editor.sidebarContentHeight = currentY;
+                
+                this.ctx.restore();
+                
+                this.drawButton('menu', 'Main Menu', 10, 10, 180, 50);
+
+                const worldMouse = this.editorCamera.toWorldCoords(this.mouse.x, this.mouse.y);
+                if (this.editor.selectedTool && 
+                    this.mouse.x < editorView.w && this.mouse.y < editorView.h &&
+                    !this.mouse.isDown) {
+                    const toolId = this.editor.selectedTool;
+                    if (toolId !== 'select' && toolId !== 'duplicate' && toolId !== 'rotate') {
+                        
+                        this.ctx.save();
+                        this.ctx.rect(0, 0, editorView.w, editorView.h);
+                        this.ctx.clip();
+                        this.editorCamera.apply(this.ctx);
+
+                        this.ctx.globalAlpha = 0.5;
+                        if (toolId === 'player_spawn') {
+                            this.ctx.fillStyle = this.player.color;
+                            this.ctx.fillRect(worldMouse.x - this.player.size.w/2, worldMouse.y - this.player.size.h/2, this.player.size.w, this.player.size.h);
+                        } else if (toolId === 'erase') {
+                            this.ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                            this.ctx.beginPath(); this.ctx.arc(worldMouse.x, worldMouse.y, 15, 0, Math.PI * 2); this.ctx.fill();
+                        } else {
+                            const toolData = this.toolPalette.find(t => t.id === toolId);
+                            let w = 150, h = 30;
+                            if (toolId === 'spike') { w = 30; h = 30; }
+                            if (toolId === 'lava') { w = 80; h = 40; }
+                            if (toolId === 'finish') { w = 50, h = 50; }
+                            if (toolId === 'ice') { w = 150, h = 30; }
+                            Entity.renderData(this.ctx, {x: worldMouse.x - w/2, y: worldMouse.y - h/2, w, h, c:toolData.color, t:toolId, rotation: 0});
+                        }
+                        this.ctx.globalAlpha = 1.0;
+                        this.editorCamera.restore(this.ctx);
+                        this.ctx.restore();
+                    }
+                }
+            }
+            
+            renderShowMessage() {
+                let baseRenderState = this.state;
+                if (this.messageTimer > 0 && this.state === STATE.SHOW_MESSAGE) {
+                    baseRenderState = this.nextState;
+                }
+                
+                switch(baseRenderState) {
+                    case STATE.LEVEL_EDITOR: this.renderEditor(); break;
+                    case STATE.LEVEL_SELECT: this.renderLevelSelect(); break;
+                    case STATE.SHOW_SHARE_CODE: this.renderLevelSelect(); break;
+                    default: this.renderMainMenu(); break;
+                }
+                
+                if (this.messageTimer > 0 && this.state === STATE.SHOW_MESSAGE) {
+                    const alpha = Math.min(1, (120 - this.messageTimer) / 30) * Math.min(1, this.messageTimer / 30);
+                    this.ctx.fillStyle = `rgba(0, 0, 0, ${alpha * 0.7})`;
+                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.drawText(this.messageText, this.canvas.width / 2, this.canvas.height / 2, 50, `rgba(255, 255, 255, ${alpha})`, 'center');
+                }
+            }
+            
+            drawText(text, x, y, size, color, align, baseline = 'middle') {
+                this.ctx.font = `bold ${size}px Inter`;
+                this.ctx.fillStyle = color;
+                this.ctx.textAlign = align;
+                this.ctx.textBaseline = baseline;
+                this.ctx.fillText(text, x, y);
+            }
+            
+            drawButton(id, text, x, y, w, h, color = '#444') {
+                this.buttons.push({ id, x, y, w, h });
+                let bgColor = color;
+                
+                let isHovered = false;
+                if (!this.isListeningForText && this.state !== STATE.SHOW_SHARE_CODE &&
+                    this.mouse.x > x && this.mouse.x < x + w && 
+                    this.mouse.y > y && this.mouse.y < y + h ) {
+                    isHovered = true;
+                }
+                
+                if(isHovered) {
+                    bgColor = (color === '#444') ? '#666' : (color === '#CC4444' ? '#DD6666' : (color === '#111' ? '#333' : '#59D'));
+                    if(color === '#4C8') bgColor = '#5D9';
+                    if(color === '#777') bgColor = '#999';
+                    this.canvas.style.cursor = 'pointer';
+                }
+                
+                this.ctx.fillStyle = bgColor;
+                this.ctx.fillRect(x, y, w, h);
+                this.drawText(text, x + w / 2, y + h / 2, 20, 'white', 'center');
+            }
+            
+            drawButtonInScroll(id, text, x, y, w, h, color = '#444', fontSize = 20) {
+                let bgColor = color;
+                const scrollAreaY = 50;
+                const scrollAreaH = this.canvas.height - 140 - scrollAreaY;
+                const btnYOnScreen = y - this.editor.sidebarScrollY + scrollAreaY;
+
+                this.buttons.push({ id, x: x, y: btnYOnScreen, w: w, h: h });
+
+                if (!this.isListeningForText && this.state !== STATE.SHOW_SHARE_CODE &&
+                     this.mouse.x > x && this.mouse.x < x + w && 
+                     this.mouse.y > btnYOnScreen && this.mouse.y < btnYOnScreen + h &&
+                     this.mouse.y > scrollAreaY && this.mouse.y < scrollAreaY + scrollAreaH
+                   ) {
+                    bgColor = (color === '#444') ? '#666' : (color === '#111' ? '#333' : '#DD6666');
+                    this.canvas.style.cursor = 'pointer';
+                }
+                this.ctx.fillStyle = bgColor;
+                this.ctx.fillRect(x, y, w, h);
+                this.drawText(text, x + w / 2, y + h / 2, fontSize, 'white', 'center');
+            }
+
+            gameLoop() {
+                this.update();
+                this.render();
+                requestAnimationFrame(this.gameLoop.bind(this));
+            }
+        }
+
+        // --- START THE GAME ---
+        const game = new Game('gameCanvas');
+
+    </script>
+</body>
+</html>
