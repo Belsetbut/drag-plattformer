@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bestr Platfforme</title>
+    <title>Drag Platformer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -783,8 +783,9 @@
                     if (this.attemptsRemaining <= 0 || !this.player.isStopped(this.physics)) return;
                     this.isDragging = true;
                     this.dragStart = { x: this.mouse.x, y: this.mouse.y };
+                    // --- FIX 1: Initialize dragEnd immediately ---
+                    // This prevents a "tap" (mousedown/mouseup with no move) from using an old value
                     this.dragEnd = { x: this.mouse.x, y: this.mouse.y };
-
                 } else if (this.state === STATE.LEVEL_EDITOR) {
                     if (this.mouse.x >= this.canvas.width - this.editor.sidebarWidth) {
                         return;
@@ -931,6 +932,14 @@
                 if (this.state === STATE.PLAYING || this.state === STATE.TESTING_LEVEL) {
                     if (this.isDragging) {
                         this.isDragging = false;
+
+                        // --- FIX 2: This is the critical fix ---
+                        // We must update dragEnd to the final mouse position *on mouseup*,
+                        // otherwise a fast "flick" (mousedown/up with no move) will not register
+                        // and dragEnd will be stuck at its old value.
+                        this.dragEnd = { x: this.mouse.x, y: this.mouse.y };
+                        // --- End of fix ---
+                        
                         let forceX = (this.dragStart.x - this.dragEnd.x);
                         let forceY = (this.dragStart.y - this.dragEnd.y);
                         
