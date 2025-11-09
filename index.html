@@ -933,13 +933,23 @@
                         this.isDragging = false;
                         let forceX = (this.dragStart.x - this.dragEnd.x);
                         let forceY = (this.dragStart.y - this.dragEnd.y);
+                        
+                        // --- NEW: Physics Safety Check ---
+                        // This is the critical fix. We must ensure these values are valid *before* calculation.
+                        const safeLaunchPower = (isNaN(this.physics.launchPower) || this.physics.launchPower === undefined) ? DEFAULT_PHYSICS.launchPower : this.physics.launchPower;
+                        const safeMaxLaunch = (isNaN(this.physics.maxLaunch) || this.physics.maxLaunch === undefined) ? DEFAULT_PHYSICS.maxLaunch : this.physics.maxLaunch;
+                        // --- End of Safety Check ---
+
                         const magnitude = Math.sqrt(forceX * forceX + forceY * forceY);
-                        if (magnitude > this.physics.maxLaunch / this.physics.launchPower) {
-                            const scale = (this.physics.maxLaunch / this.physics.launchPower) / magnitude;
+                        
+                        // Check for division by zero or invalid numbers
+                        if (magnitude > 0 && (magnitude > safeMaxLaunch / safeLaunchPower)) {
+                            const scale = (safeMaxLaunch / safeLaunchPower) / magnitude;
                             forceX *= scale;
                             forceY *= scale;
                         }
-                        this.player.applyForce(forceX * this.physics.launchPower, forceY * this.physics.launchPower);
+                        
+                        this.player.applyForce(forceX * safeLaunchPower, forceY * safeLaunchPower);
                         this.attemptsRemaining--;
                         this.attemptsUsed++;
                     }
