@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bestr Platfformer</title>
+    <title>Bestr Platfforme</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -181,15 +181,39 @@
                 this.isGrounded = false;
                 this.isOnIce = false;
             }
+            
+            // MODIFIED: Player.update
             update(entities, physics, levelHeight) {
-                if (!this.isGrounded) this.vel.y += physics.gravity;
-                let currentFriction = this.isGrounded ? (this.isOnIce ? physics.iceFriction : physics.groundFriction) : physics.friction;
+                // --- NEW: Physics Safety Check ---
+                // This prevents NaN or undefined values from crashing the physics.
+                const safePhysics = {
+                    gravity: (isNaN(physics.gravity) || physics.gravity === undefined) ? DEFAULT_PHYSICS.gravity : physics.gravity,
+                    friction: (isNaN(physics.friction) || physics.friction === undefined) ? DEFAULT_PHYSICS.friction : physics.friction,
+                    groundFriction: (isNaN(physics.groundFriction) || physics.groundFriction === undefined) ? DEFAULT_PHYSICS.groundFriction : physics.groundFriction,
+                    iceFriction: (isNaN(physics.iceFriction) || physics.iceFriction === undefined) ? DEFAULT_PHYSICS.iceFriction : physics.iceFriction,
+                };
+                // --- End of Safety Check ---
+
+                if (!this.isGrounded) this.vel.y += safePhysics.gravity;
+                
+                let currentFriction = this.isGrounded ? 
+                    (this.isOnIce ? safePhysics.iceFriction : safePhysics.groundFriction) : 
+                    safePhysics.friction;
+                
+                // Final check for friction itself
+                if (isNaN(currentFriction) || currentFriction === undefined) {
+                    currentFriction = DEFAULT_PHYSICS.friction;
+                }
+
                 this.vel.x *= currentFriction;
+                
                 if (Math.abs(this.vel.x) < 0.1) this.vel.x = 0;
                 if (Math.abs(this.vel.y) < 0.1 && this.isGrounded) this.vel.y = 0;
+                
                 this.pos.x += this.vel.x;
                 let specialCollision = this.handleCollisionsX(entities);
                 this.pos.y += this.vel.y;
+                
                 this.isGrounded = false;
                 this.isOnIce = false;
                 let specialCollisionY = this.handleCollisionsY(entities);
