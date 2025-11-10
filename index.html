@@ -420,7 +420,7 @@
                 } else {
                     this.savedLevels = [
                         {
-                            name: "Test Level",
+                            name: "Level 1",
                             entities: [
                                 { x: 0, y: this.canvas.height - 40, w: this.canvas.width, h: 40, c: '#888', t: 'platform', rotation: 0 },
                                 { x: 200, y: this.canvas.height - 70, w: 150, h: 30, c: '#AADDFF', t: 'ice', rotation: 0 },
@@ -436,6 +436,20 @@
                             physics: { ...DEFAULT_PHYSICS },
                             width: this.canvas.width,
                             height: this.canvas.height
+                        },
+                        {
+                            name: "Level 2",
+                            entities: [
+                                { x: 0, y: 2960, w: this.canvas.width -1100, h: 40, c: '#888', t: 'platform', rotation: 0 },
+                                { x: 200, y: 2800, w: 200, h: 40, c: "#fff", t: "ice", rotation: -90 }
+                                
+                            ],
+                            spawn: { x: 50, y: +2780 },
+                            maxTries: 10,
+                            starTries: { one: 8, two: 5, three: 3 },
+                            physics: { ...DEFAULT_PHYSICS },
+                            width: this.canvas.width,
+                            height: 3000
                         }
                     ];
                 }
@@ -999,7 +1013,7 @@
                 if (this.editor.selectedEntityIndex !== null) {
                     const entity = this.editor.entities[this.editor.selectedEntityIndex];
                     if (!entity) return;
-                    entity.rotation = (entity.rotation || 0) + 90;
+                    entity.rotation = (entity.rotation || 0) + 10;
                     if (entity.rotation >= 360) {
                         entity.rotation = 0;
                     }
